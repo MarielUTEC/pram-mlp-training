@@ -1,9 +1,17 @@
 import csv
 import time
 import argparse
+import sys
+from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# Permite ejecutar este script desde la raiz del repositorio sin instalar el proyecto.
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from beta1_parallel import generar_datos, entrenamiento_paralelo
 

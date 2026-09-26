@@ -1,0 +1,592 @@
+\documentclass[11pt,a4paper]{article}
+
+% --------------------------------------------------
+% PAQUETES
+% --------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-nodecimaldot]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{microtype}
+
+\geometry{top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4
+}
+
+\SetKwFor{ForPar}{parallel for}{do}{end}
+\SetKwComment{tcp}{// }{}
+
+% --------------------------------------------------
+% COMANDOS
+% --------------------------------------------------
+\newcommand{\Tseq}{T_{\mathrm{seq}}}
+\newcommand{\Tpar}{T_p}
+\newcommand{\Work}{W}
+\newcommand{\Depth}{D}
+\newcommand{\Speedup}{S}
+\newcommand{\Efficiency}{E_f}
+\newcommand{\Cost}{C}
+
+\begin{document}
+
+% ==================================================
+% PORTADA
+% ==================================================
+\begin{titlepage}
+    \centering
+    \vspace*{0.5cm}
+
+    \IfFileExists{UTEC-Logo.jpg}{%
+        \includegraphics[width=7.5cm]{UTEC-Logo.jpg}\par\vspace{0.8cm}
+    }{}
+
+    {\Large UNIVERSIDAD DE INGENIERÍA Y TECNOLOGÍA\par}
+    \vspace{0.5cm}
+    {\large Computación Paralela y Distribuida\par}
+
+    \vfill
+
+    {\LARGE\bfseries
+    Paralelización PRAM del Entrenamiento de Múltiples\\
+    Redes Neuronales MLP\par}
+
+    \vspace{1cm}
+    {\large Proyecto Parcial\par}
+    {\large Docente: José Fiestas\par}
+
+    \vfill
+
+    \begin{tabular}{lc}
+        \toprule
+        Integrante & Participación \\
+        \midrule
+        Noemi Huarino Anchillo   & 100\% \\
+        Margiory Alvarado Chavez & 100\% \\
+        Mariel Tovar Tolentino   & 100\% \\
+        \bottomrule
+    \end{tabular}
+
+    \vfill
+    Lima, Perú\\
+    Septiembre de 2026
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ==================================================
+\section{Introducción}
+% ==================================================
+
+El proyecto estudia la paralelización del entrenamiento de múltiples redes neuronales
+MLP inicializadas con semillas distintas. El pseudocódigo base evalúa varios modelos
+sobre una misma partición de entrenamiento y prueba y selecciona, al finalizar, el
+modelo con mayor exactitud. La estructura del algoritmo presenta paralelismo natural:
+los entrenamientos correspondientes a semillas diferentes no dependen entre sí y solo
+requieren combinar sus resultados al final.
+
+El objetivo es diseñar este procedimiento bajo un modelo PRAM, caracterizar su trabajo,
+profundidad, speedup y eficiencia, e implementar una aproximación práctica en Python
+para contrastar posteriormente el comportamiento teórico con mediciones experimentales.
+El análisis toma como costo base, de acuerdo con el enunciado del proyecto, el
+entrenamiento de un MLP:
+
+\begin{equation}
+    \Cost(n,d,h,E)=\Theta(E\,n\,d\,h),
+    \label{eq:costo-modelo}
+\end{equation}
+
+donde $E$ es el número de épocas/iteraciones consideradas por el modelo de costo,
+$n$ el número de muestras, $d$ la dimensión de entrada y $h$ el parámetro de ancho
+utilizado en la cota proporcionada.
+
+% ==================================================
+\section{Formulación del problema y algoritmo secuencial}
+% ==================================================
+
+\subsection{Notación}
+
+Para distinguir el tamaño del workload de la cantidad de recursos se emplea la
+notación de la Tabla~\ref{tab:notacion}.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{cl}
+\toprule
+Símbolo & Descripción \\
+\midrule
+$E$ & Número de épocas/iteraciones del entrenamiento \\
+$n$ & Número de muestras \\
+$d$ & Número de características de entrada \\
+$h$ & Parámetro de ancho/neuronas usado en la cota del enunciado \\
+$m=|S|$ & Número de semillas/modelos evaluados \\
+$p$ & Número de procesadores/workers disponibles \\
+\bottomrule
+\end{tabular}
+\caption{Notación empleada en el análisis.}
+\label{tab:notacion}
+\end{table}
+
+El pseudocódigo del enunciado usa como caso particular
+$S=\{0,1,\ldots,p-1\}$, por lo que $m=p$. En el análisis formal se mantienen
+$m$ y $p$ separados para no confundir la cantidad de modelos que forman el problema
+con el número de recursos asignados. Al final se especializan las expresiones al caso
+$m=p$ solicitado.
+
+\subsection{Algoritmo secuencial}
+
+\begin{algorithm}[H]
+\caption{Entrenamiento secuencial de múltiples MLP con semillas distintas}
+\label{alg:secuencial}
+\KwIn{Datos $(X,y)$, conjunto de semillas $S$, hiperparámetros del MLP}
+\KwOut{Modelo $M^*$ con mayor exactitud}
+
+Dividir una sola vez $(X,y)$ en train y test\;
+$A_{\mathrm{best}}\leftarrow -\infty$; $M^*\leftarrow \varnothing$\;
+
+\ForEach{$s\in S$}{
+    Inicializar el generador aleatorio con semilla $s$\;
+    Construir el modelo independiente $M_s$\;
+    Entrenar $M_s$ sobre el conjunto de entrenamiento\;
+    $A_s\leftarrow \operatorname{accuracy}(M_s,X_{\mathrm{test}},y_{\mathrm{test}})$\;
+    \If{$A_s>A_{\mathrm{best}}$}{
+        $A_{\mathrm{best}}\leftarrow A_s$\;
+        $M^*\leftarrow M_s$\;
+    }
+}
+Guardar y retornar $M^*$\;
+\end{algorithm}
+
+Si entrenar un modelo cuesta $\Cost=\Theta(E n d h)$, entrenar secuencialmente
+$m$ semillas tiene costo
+
+\begin{equation}
+    \Tseq(m,n,d,h,E)=\Theta(m\,E\,n\,d\,h).
+    \label{eq:tseq-general}
+\end{equation}
+
+La comparación final entre las $m$ accuracies añade $\Theta(m)$ operaciones, que no
+cambia el orden cuando el costo de entrenamiento domina.
+
+% ==================================================
+\section{Diseño del algoritmo PRAM}
+% ==================================================
+
+\subsection{Paralelismo entre semillas}
+
+La unidad paralela principal es el entrenamiento completo correspondiente a una semilla.
+Para dos semillas distintas $s_i$ y $s_j$, los modelos $M_i$ y $M_j$ poseen estados
+mutables independientes: pesos, trayectoria de optimización y resultado final. Por ello,
+ambos entrenamientos pueden ejecutarse simultáneamente siempre que compartan únicamente
+información de solo lectura, como el dataset, la partición train/test y los hiperparámetros.
+
+Con $m$ semillas y $p$ workers, las semillas se distribuyen entre los workers; cada uno
+procesa como máximo $\lceil m/p\rceil$ entrenamientos. En el caso particular $m=p$,
+cada worker entrena exactamente un modelo.
+
+\subsection{Elección de CREW-PRAM}
+
+Se adopta el modelo \textbf{CREW (Concurrent Read, Exclusive Write)} porque representa
+de manera directa el patrón de acceso requerido:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Lecturas concurrentes:} varios procesadores pueden consultar de forma
+    simultánea $X_{\mathrm{train}}$, $y_{\mathrm{train}}$, $X_{\mathrm{test}}$,
+    $y_{\mathrm{test}}$ y los hiperparámetros comunes.
+    \item \textbf{Escrituras exclusivas:} cada semilla escribe su accuracy y la referencia
+    a su modelo en posiciones propias, por ejemplo $Acc[s]$ y $Mod[s]$.
+\end{itemize}
+
+No se requiere CRCW porque el algoritmo evita que dos procesadores escriban
+simultáneamente en la misma celda. Un diseño EREW también sería posible mediante
+replicación o planificación adicional de lecturas; sin embargo, CREW se ajusta de forma
+más natural a la lectura compartida del dataset sin introducir esa complejidad extra.
+
+\subsection{Pseudocódigo paralelo teórico}
+
+\begin{algorithm}[H]
+\caption{Entrenamiento paralelo CREW-PRAM de múltiples MLP}
+\label{alg:crew}
+\KwIn{Datos $(X,y)$, semillas $S$ con $|S|=m$, $p$ procesadores}
+\KwOut{Modelo $M^*$ con mayor exactitud}
+
+$P_0$ divide una sola vez los datos en train/test y publica los datos de solo lectura\;
+
+\ForPar{$P_i$, $i=0,\ldots,p-1$}{
+    \For{$s=i$; $s<m$; $s\leftarrow s+p$}{
+        Construir y entrenar $M_s$ con semilla $s$\;
+        $Acc[s]\leftarrow \operatorname{accuracy}(M_s)$\;
+        $Mod[s]\leftarrow M_s$\;
+        \tcp{cada $s$ tiene un slot exclusivo}
+    }
+}
+
+Realizar reducción binaria sobre $(Acc[s],Mod[s])$ para obtener el máximo global\;
+$P_0$ guarda y retorna el modelo ganador\;
+\end{algorithm}
+
+La reducción se organiza como un árbol binario. En cada nivel se comparan pares
+disjuntos, por lo que ninguna posición destino recibe dos escrituras simultáneas. La
+profundidad de esta fase es $\Theta(\log m)$.
+
+% ==================================================
+\section{Análisis de complejidad PRAM}
+% ==================================================
+
+\subsection{Trabajo}
+
+El trabajo total incluye $m$ entrenamientos de costo $\Cost$ y una reducción de máximo
+con $m-1$ comparaciones:
+
+\begin{align}
+    \Work
+    &= \Theta(m\Cost+m) \\
+    &= \Theta(m\,E\,n\,d\,h).
+    \label{eq:work}
+\end{align}
+
+Este orden coincide con el algoritmo secuencial para el mismo conjunto de $m$ semillas,
+por lo que la estrategia es work-optimal respecto de este baseline.
+
+\subsection{Profundidad}
+
+En esta versión del diseño el paralelismo se explota \emph{entre} modelos; el
+entrenamiento interno de cada MLP se considera una cadena de costo $\Cost$. Con
+procesadores suficientes, todos los entrenamientos pueden ejecutarse simultáneamente y,
+después, la reducción requiere $\Theta(\log m)$ niveles:
+
+\begin{equation}
+    \Depth=\Theta(\Cost+\log m)
+    =\Theta(E\,n\,d\,h+\log m).
+    \label{eq:depth}
+\end{equation}
+
+\subsection{Paralelismo disponible}
+
+\begin{equation}
+    \Pi=\frac{\Work}{\Depth}
+    =\Theta\left(\frac{m\Cost}{\Cost+\log m}\right).
+    \label{eq:parallelism}
+\end{equation}
+
+Cuando $\Cost\gg\log m$, se obtiene $\Pi\approx\Theta(m)$. Por tanto, el número de
+semillas limita esencialmente el paralelismo externo aprovechable: disponer de muchos
+más procesadores que modelos no reduce el costo secuencial interno de un entrenamiento.
+
+\subsection{Tiempo con $p$ procesadores}
+
+Distribuyendo $m$ semillas entre $p$ workers, un modelo de tiempo directo es
+
+\begin{equation}
+    \Tpar(m,p)=\Theta\left(\left\lceil\frac{m}{p}\right\rceil\Cost+\log m\right).
+    \label{eq:tp-directo}
+\end{equation}
+
+La Ley de Brent proporciona además la cota general
+
+\begin{equation}
+    \Tpar=O\left(\frac{\Work}{p}+\Depth\right)
+    =O\left(\frac{m\Cost}{p}+\Cost+\log m\right).
+    \label{eq:brent}
+\end{equation}
+
+\subsection{Caso particular $m=p$}
+
+El enunciado define $S=\{0,1,\ldots,p-1\}$, de modo que $m=p$. En esta configuración,
+el workload contiene $p$ entrenamientos y cada worker procesa uno:
+
+\begin{equation}
+    T_{\mathrm{par}}(p)=\Theta(\Cost+\log p).
+    \label{eq:tpar-mp}
+\end{equation}
+
+El mismo workload ejecutado secuencialmente requiere
+
+\begin{equation}
+    T_{\mathrm{seq}}(p)=\Theta(p\Cost).
+    \label{eq:tseq-mp}
+\end{equation}
+
+Por tanto, el speedup teórico para \emph{el mismo conjunto de $p$ semillas} es
+
+\begin{equation}
+    \Speedup(p)
+    \approx\frac{p\Cost}{\Cost+\log p},
+    \label{eq:speedup}
+\end{equation}
+
+y la eficiencia es
+
+\begin{equation}
+    \Efficiency(p)=\frac{\Speedup(p)}{p}
+    \approx\frac{\Cost}{\Cost+\log p}.
+    \label{eq:eficiencia}
+\end{equation}
+
+Si $\Cost\gg\log p$, entonces $\Speedup(p)\approx p$ y $\Efficiency(p)\approx1$ en el
+modelo ideal. Estas expresiones no incluyen creación de procesos, serialización, copias
+de memoria, scheduling ni paralelismo interno de las bibliotecas numéricas.
+
+\subsection{Criterio correcto para medir speedup}
+
+Debido a que el caso $m=p$ aumenta el número de modelos cuando aumenta $p$, no es
+correcto usar el tiempo de $p=1$ como baseline secuencial para todos los puntos. Para
+cada valor de $p$ se debe comparar el mismo workload:
+
+\begin{equation}
+    \Speedup(p)=
+    \frac{T_{\mathrm{seq}}(m=p)}{T_{\mathrm{par}}(m=p,p)}.
+    \label{eq:speedup-experimental}
+\end{equation}
+
+Es decir, el baseline secuencial correspondiente a $p=8$ debe entrenar las mismas ocho
+semillas una tras otra antes de compararse con la ejecución paralela de esas ocho
+semillas.
+
+% ==================================================
+\section{Implementación y estado de las versiones beta}
+% ==================================================
+
+\subsection{Tecnologías y mapeo del modelo}
+
+La implementación actual se desarrolla en Python con \texttt{scikit-learn}. La Beta 1
+utiliza \texttt{MLPClassifier} para los modelos, \texttt{make\_classification} para
+generar datasets sintéticos de tamaño controlado, \texttt{train\_test\_split} para una
+partición reproducible y \texttt{multiprocessing.Pool} para ejecutar entrenamientos de
+semillas distintas en procesos separados.
+
+La elección de procesos, en lugar de \texttt{threading}, busca obtener paralelismo CPU
+real para un workload computacional. En el modelo teórico, $p$ representa procesadores
+PRAM; en la Beta 1, $p$ se mapea a procesos worker del sistema operativo.
+
+\paragraph{Limitación importante.}
+CREW presupone una memoria global compartida. En la implementación actual, los arreglos
+de NumPy se pasan como argumentos a los workers. En plataformas que usan
+\emph{spawn}, como Windows, esto implica serialización y copias; por ello la Beta 1 es
+una aproximación del patrón de tareas CREW, no una realización literal de su memoria
+compartida. Esta diferencia deberá considerarse al analizar el overhead experimental.
+
+\subsection{Beta 0: baseline secuencial}
+
+% TODO NOEMI: completar la implementación secuencial de m semillas y describir aquí.
+La Beta 0 debe entrenar exactamente el mismo conjunto de $m$ semillas que la versión
+paralela, pero una tras otra. Este baseline es indispensable para calcular speedup y
+eficiencia de forma válida.
+
+\subsection{Beta 1: paralelismo entre semillas}
+
+La Beta 1 implementada ejecuta una tarea por semilla mediante
+\texttt{multiprocessing.Pool}. Cada worker construye un modelo independiente, calcula
+su accuracy y devuelve $(seed,accuracy,modelo)$ al proceso maestro. La estructura
+principal puede resumirse como:
+
+\begin{lstlisting}
+with Pool(processes=p) as pool:
+    resultados = pool.map(_entrenar_una_semilla, tareas)
+
+mejor_seed, mejor_acc, mejor_modelo = max(
+    resultados, key=lambda r: r[1]
+)
+\end{lstlisting}
+
+La paralelización de los entrenamientos coincide con el diseño PRAM. Sin embargo, la
+selección actual del máximo se realiza secuencialmente mediante \texttt{max}, con costo
+$\Theta(m)$ en el maestro. La reducción en árbol $\Theta(\log m)$ pertenece al diseño
+teórico y debe incorporarse en una beta posterior si se busca una correspondencia más
+estrecha entre código y pseudocódigo PRAM.
+
+La configuración actual de Beta 1 es provisional. El código utiliza por defecto
+\texttt{hidden\_layer\_sizes=(10,10)}, $\alpha=10^{-4}$,
+\texttt{learning\_rate\_init}$=10^{-3}$ y \texttt{max\_iter}$=200$. El informe mantiene
+$\Theta(E n d h)$ como el modelo de costo indicado por el enunciado; antes de la campaña
+experimental final, el equipo debe congelar la arquitectura e hiperparámetros y no
+modificarlos entre configuraciones.
+
+\subsection{Benchmark Beta 1}
+
+El script \texttt{benchmarks/run\_benchmarkB1.py} automatiza combinaciones de
+
+\begin{equation}
+    p\in\{1,2,4,8,16,32\},\qquad
+    n\in\{5000,10000,20000,40000\},
+\end{equation}
+
+realiza varias repeticiones y registra tiempo promedio, mínimo, máximo y accuracy. Esta
+fase permite estudiar el costo real de la Beta 1, pero todavía no constituye el benchmark
+final de speedup mientras no se incluya el baseline secuencial equivalente para cada
+workload.
+
+% ==================================================
+\section{Metodología experimental}
+% ==================================================
+
+La campaña final deberá mantener constantes arquitectura, hiperparámetros, número de
+features, proporción train/test, seed de generación del dataset, seed del split y entorno
+de ejecución. Para cada combinación se recomienda realizar al menos tres repeticiones y
+reportar tanto una medida central como la dispersión observada.
+
+El dataset sintético es apropiado para este objetivo porque permite fijar exactamente el
+número de muestras sin introducir cambios de distribución entre valores de $p$. La Beta
+1 actual genera datos binarios con \texttt{n\_features=20},
+\texttt{n\_informative=15} y \texttt{random\_state=42}.
+
+\subsection{Control del paralelismo interno}
+
+Las bibliotecas numéricas utilizadas por scikit-learn pueden ejecutar operaciones BLAS
+con múltiples hilos. Si cada proceso worker crea a su vez varios hilos internos se produce
+\emph{oversubscription}; en tal caso, $p$ deja de representar adecuadamente el número de
+recursos externos estudiado. Antes de medir resultados finales se deben limitar y
+documentar los hilos internos de OpenMP/BLAS, por ejemplo mediante variables de entorno
+o \texttt{threadpoolctl}.
+
+\subsection{Métricas}
+
+Para cada configuración se registrarán al menos:
+
+\begin{align}
+    T_{\mathrm{seq}}(p,n),\qquad
+    T_{\mathrm{par}}(p,n),\qquad
+    \Speedup(p,n)&=\frac{T_{\mathrm{seq}}(p,n)}{T_{\mathrm{par}}(p,n)},\\
+    \Efficiency(p,n)&=\frac{\Speedup(p,n)}{p}.
+\end{align}
+
+% ==================================================
+\section{Resultados y comparación teoría--experimento}
+% ==================================================
+
+% TODO MARGIORY: insertar resultados finales y figuras una vez terminados los benchmarks.
+A la fecha de este avance se dispone de la infraestructura inicial para medir tiempos de
+Beta 1. La comparación final deberá superponer el comportamiento experimental con el
+modelo teórico, considerando que la constante multiplicativa de la notación asintótica
+se estima a partir de mediciones y se mantiene fija al generar predicciones posteriores.
+
+Si $\Cost=c\,E n d h$ para una constante empírica $c$, el caso $m=p$ predice
+
+\begin{equation}
+    T_{\mathrm{par,teo}}(p,n)
+    \approx c\,E n d h + c_r\log p,
+\end{equation}
+
+donde $c_r$ captura el costo de una etapa de reducción en el modelo ajustado. La Beta 1
+real puede apartarse de esta forma por serialización, creación de procesos, copias de
+datos y reducción secuencial.
+
+\IfFileExists{figures/tiempo.png}{
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/tiempo.png}
+    \caption{Tiempo de ejecución en función del número de workers.}
+\end{figure}
+}{}
+
+\IfFileExists{figures/speedup.png}{
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/speedup.png}
+    \caption{Speedup experimental.}
+\end{figure}
+}{}
+
+\IfFileExists{figures/eficiencia.png}{
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/eficiencia.png}
+    \caption{Eficiencia experimental.}
+\end{figure}
+}{}
+
+% ==================================================
+\section{Análisis de escalabilidad}
+% ==================================================
+
+% TODO MARGIORY/MARIEL: completar con los resultados finales.
+La estrategia externa posee, idealmente, paralelismo máximo del orden de $m$, porque
+cada semilla proporciona una tarea independiente. Por ello, incluso bajo PRAM, aumentar
+$p$ más allá del número de semillas no reduce el costo interno de un MLP. En la
+implementación real también se espera que el overhead de creación de procesos,
+movimiento de datos y sincronización reduzca la eficiencia antes de alcanzar el límite
+ideal.
+
+Cuando el experimento usa $m=p$, cada punto incrementa simultáneamente la cantidad de
+trabajo (más semillas) y los recursos. Por tanto, este conjunto de puntos no debe
+interpretarse como strong scaling clásico de un workload fijo. El análisis de speedup se
+realiza comparando, para cada $p$, las versiones secuencial y paralela del mismo conjunto
+de $p$ semillas.
+
+% ==================================================
+\section{Impacto de las fuentes utilizadas}
+% ==================================================
+
+% TODO NOEMI: incorporar 4--5 fuentes relevantes y explicar el impacto concreto de cada una.
+% Evitar definiciones genéricas. Indicar qué decisión de diseño, complejidad o implementación
+% fue respaldada/cambiada por cada referencia.
+
+Esta sección será completada con las referencias que hayan influido directamente en el
+diseño PRAM, la derivación de métricas y las decisiones de implementación.
+
+% ==================================================
+\section{Uso de herramientas de inteligencia artificial}
+% ==================================================
+
+% TODO NOEMI/EQUIPO: redactar de forma específica y verificable.
+La versión final documentará de manera transparente las tareas en las que se utilizó IA,
+qué resultados fueron producidos y qué verificaciones o correcciones realizó el equipo
+antes de incorporar dichos resultados al proyecto.
+
+% ==================================================
+\section{Conclusiones preliminares}
+% ==================================================
+
+El pseudocódigo del proyecto permite explotar un nivel de paralelismo de grano grueso
+entre semillas: cada entrenamiento es independiente y solo existe una dependencia global
+al seleccionar el mejor modelo. Bajo este diseño, CREW es un modelo apropiado porque
+permite lectura concurrente del dataset y escrituras exclusivas de los estados y
+resultados de cada modelo.
+
+El análisis distingue explícitamente $m$, número de semillas, de $p$, número de recursos.
+Esta separación permite formular correctamente el trabajo
+$\Theta(m E n d h)$, la profundidad $\Theta(E n d h+\log m)$ y el límite de paralelismo,
+que es aproximadamente $\Theta(m)$ cuando el entrenamiento domina el costo de la
+reducción.
+
+La Beta 1 ya implementa el paralelismo entre semillas, pero conserva dos diferencias
+respecto del PRAM ideal: los datos no se encuentran todavía en memoria compartida literal
+y la selección del máximo se realiza secuencialmente en el maestro. Estas diferencias se
+considerarán explícitamente al interpretar los benchmarks y constituyen los principales
+puntos de mejora para las siguientes versiones.
+
+% ==================================================
+\section*{Referencias}
+% ==================================================
+
+% TODO NOEMI: reemplazar por BibTeX/referencias definitivas.
+% El archivo report/references.bib queda reservado para esta sección.
+
+\end{document}

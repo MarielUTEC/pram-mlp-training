@@ -395,10 +395,48 @@ compartida. Esta diferencia deberá considerarse al analizar el overhead experim
 
 \subsection{Beta 0: baseline secuencial}
 
-% TODO NOEMI: completar la implementación secuencial de m semillas y describir aquí.
-La Beta 0 debe entrenar exactamente el mismo conjunto de $m$ semillas que la versión
-paralela, pero una tras otra. Este baseline es indispensable para calcular speedup y
-eficiencia de forma válida.
+La Beta 0 implementa el baseline secuencial del algoritmo. Su función es entrenar
+exactamente el mismo conjunto de $m$ semillas que la versión paralela, pero una tras
+otra. Esta condición es necesaria para que la comparación de tiempos utilice el mismo
+workload y para que el speedup no mezcle una reducción del tiempo con una reducción de
+la cantidad de modelos entrenados.
+
+La implementación se encuentra en\linebreak
+\texttt{src/beta0\_sequential.py}. La partición de los datos se realiza una sola vez
+antes del bucle de semillas, utilizando el mismo tamaño de prueba y la misma semilla de
+partición que Beta 1. Para cada $s\in\{0,\ldots,m-1\}$, el programa construye un
+\texttt{MLPClassifier} con \texttt{random\_state=s}, entrena el modelo, calcula su
+accuracy y actualiza el ganador si obtiene un valor mayor.
+
+En el experimento definido por el enunciado se utiliza $m=p$. Por tanto, para medir el
+speedup correspondiente a un valor de $p$, la Beta 0 entrena secuencialmente las mismas
+$p$ semillas que la Beta 1 ejecuta con $p$ workers. La medición se realiza alrededor del
+entrenamiento completo, incluyendo la división de datos, el entrenamiento de todas las
+semillas y la selección del mejor resultado.
+
+La estructura principal de la Beta 0 es:
+
+\begin{lstlisting}
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=test_size, random_state=split_seed
+)
+
+for seed in range(m):
+    modelo = MLPClassifier(random_state=seed, ...)
+    modelo.fit(X_train, y_train)
+    accuracy = accuracy_score(y_test, modelo.predict(X_test))
+
+    if accuracy > mejor_accuracy:
+        mejor_accuracy = accuracy
+        mejor_seed = seed
+        mejor_modelo = modelo
+\end{lstlisting}
+
+El programa también registra el tiempo individual de cada semilla, además del tiempo
+total del baseline. Esta información permite detectar anomalías, como una semilla cuyo
+entrenamiento tarde considerablemente más que las demás. La reproducibilidad se controla
+manteniendo fijos el dataset, la partición train/test, los hiperparámetros y la semilla
+aleatoria de cada modelo.
 
 \subsection{Beta 1: paralelismo entre semillas}
 
